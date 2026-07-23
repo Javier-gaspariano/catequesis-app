@@ -1,0 +1,303 @@
+// Sistema Inteligente de Evaluaciones para Catequesis Infantil
+// Schema de base de datos - PostgreSQL
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// =========================
+// ADMINISTRACIÓN / USUARIOS
+// =========================
+
+enum Role {
+  ADMIN_GENERAL
+  COORDINADOR
+  CATEQUISTA
+  CONSULTA
+}
+
+model Usuario {
+  id            String   @id @default(uuid())
+  nombre        String
+  email         String   @unique
+  passwordHash  String
+  rol           Role     @default(CONSULTA)
+  activo        Boolean  @default(true)
+  parroquiaId   String?
+  parroquia     Parroquia? @relation(fields: [parroquiaId], references: [id])
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  examenesCreados Examen[]      @relation("ExamenesCreadosPor")
+  logs            LogAuditoria[]
+}
+
+model Parroquia {
+  id        String     @id @default(uuid())
+  nombre    String
+  direccion String?
+  logoUrl   String?    // imagen para branding / certificados
+  colorTema String?    // color institucional opcional
+  capillas  Capilla[]
+  usuarios  Usuario[]
+  examenes  Examen[]
+  createdAt DateTime   @default(now())
+}
+
+model Capilla {
+  id          String      @id @default(uuid())
+  nombre      String
+  parroquiaId String?
+  parroquia   Parroquia?  @relation(fields: [parroquiaId], references: [id])
+  imagenUrl   String?
+  createdAt   DateTime    @default(now())
+  intentos    Intento[]
+}
+
+model Catequista {
+  id        String    @id @default(uuid())
+  nombre    String
+  email     String?
+  fotoUrl   String?
+  activo    Boolean   @default(true)
+  intentos  Intento[]
+  preguntas Pregunta[]
+  createdAt DateTime  @default(now())
+}
+
+// =========================
+// EXÁMENES
+// =========================
+
+enum EstadoExamen {
+  BORRADOR
+  PUBLICADO
+  DESPUBLICADO
+  ARCHIVADO
+}
+
+enum Escala {
+  ESCALA_0_10
+  ESCALA_0_100
+  APROBADO_NOAPROBADO
+}
+
+model Examen {
+  id                String       @id @default(uuid())
+  titulo            String
+  descripcion       String?
+  imagenPortadaUrl  String?      // imagen de bienvenida del examen
+  estado            EstadoExamen @default(BORRADOR)
+
+  parroquiaId       String?
+  parroquia         Parroquia?   @relation(fields: [parroquiaId], references: [id])
+
+  fechaApertura     DateTime?
+  fechaCierre       DateTime?
+  tiempoMaximoMin   Int?         // minutos, null = sin límite
+  intentosPermitidos Int         @default(1)
+
+  // configuración de aleatoriedad
+  mezclarPreguntas  Boolean      @default(true)
+  mezclarRespuestas Boolean      @default(true)
+  numPreguntasAlAzar Int?        // si se toma un subconjunto del banco
+  noRepetirPreguntas Boolean     @default(true)
+
+  escalaCalificacion Escala      @default(ESCALA_0_100)
+  notaAprobatoria    Float?      // umbral de aprobación
+  emiteCertificado  Boolean      @default(true)
+
+  limiteSalidasPantalla   Int?     // null = sin límite; al alcanzarlo se cierra el examen automáticamente
+  mensajeCierrePorSalidas String?  @db.Text
+
+  mensajeEncabezado String?      @db.Text // mensaje para padres, editable por examen (si es null se usa el mensaje por defecto)
+  checkboxCorrecta  Int?         // 1, 2 o 3: cuál casilla de verificación de lectura es la correcta
+
+  version           Int          @default(1)
+  examenOrigenId    String?      // para versionado: apunta al examen "raíz"
+
+  creadoPorId       String?
+  creadoPor         Usuario?     @relation("ExamenesCreadosPor", fields: [creadoPorId], references: [id])
+
+  createdAt         DateTime     @default(now())
+  updatedAt         DateTime     @updatedAt
+
+  preguntas         ExamenPregunta[]
+  intentos          Intento[]
+}
+
+// =========================
+// BANCO DE PREGUNTAS
+// =========================
+
+enum TipoPregunta {
+  RESPUESTA_UNICA
+  SELECCION_MULTIPLE
+  VERDADERO_FALSO
+  RELACIONAR_COLUMNAS
+  ORDENAR_ELEMENTOS
+  COMPLETAR_ESPACIOS
+  IMAGEN_RESPUESTA
+  BASADA_FOTOGRAFIA
+  BASADA_AUDIO
+  BASADA_VIDEO
+}
+
+model Pregunta {
+  id              String        @id @default(uuid())
+  enunciado       String
+  tipo            TipoPregunta
+  imagenUrl       String?       // foto de la pregunta (o imagen decorativa)
+  audioUrl        String?
+  videoUrl        String?
+  tiempoRespuestaSegundos Int?  // null = tiempo libre
+
+  tema            String?
+  sacramento      String?
+  bloque          String?
+  nivel           String?
+  edadObjetivo    String?
+  dificultad      String?       // fácil / medio / difícil
+  etiquetas       String[]      @default([])
+
+  catequistaId    String?
+  catequista      Catequista?   @relation(fields: [catequistaId], references: [id])
+
+  retroalimentacion String?     // explicación general
+  versiculo         String?
+  referenciaCatecismo String?
+
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  opciones        Opcion[]
+  examenPreguntas ExamenPregunta[]
+  respuestas      Respuesta[]
+}
+
+model Opcion {
+  id          String   @id @default(uuid())
+  preguntaId  String
+  pregunta    Pregunta @relation(fields: [preguntaId], references: [id], onDelete: Cascade)
+  texto       String?
+  imagenUrl   String?
+  esCorrecta  Boolean  @default(false)
+  orden       Int      @default(0)
+  // para "relacionar columnas": grupo A/B y pareja correcta
+  grupo       String?
+  parejaId    String?
+}
+
+// tabla puente examen-pregunta (permite orden fijo o banco aleatorio)
+model ExamenPregunta {
+  id          String   @id @default(uuid())
+  examenId    String
+  examen      Examen   @relation(fields: [examenId], references: [id], onDelete: Cascade)
+  preguntaId  String
+  pregunta    Pregunta @relation(fields: [preguntaId], references: [id])
+  orden       Int      @default(0)
+  puntos      Float    @default(1)
+
+  @@unique([examenId, preguntaId])
+}
+
+// =========================
+// INTENTOS / RESULTADOS
+// =========================
+
+enum EstadoIntento {
+  EN_PROGRESO
+  FINALIZADO
+  ABANDONADO
+}
+
+model Intento {
+  id             String        @id @default(uuid())
+  examenId       String
+  examen         Examen        @relation(fields: [examenId], references: [id], onDelete: Cascade)
+
+  // datos del alumno (no requiere cuenta de usuario)
+  nombreCompleto String
+  edad           Int
+  sexo           String?
+  capillaId      String?
+  capilla        Capilla?      @relation(fields: [capillaId], references: [id])
+  catequistaId   String?
+  catequista     Catequista?   @relation(fields: [catequistaId], references: [id])
+  grupo          String?
+  nivel          String?
+
+  estado         EstadoIntento @default(EN_PROGRESO)
+  iniciadoEn     DateTime      @default(now())
+  finalizadoEn   DateTime?
+  tiempoSegundos Int?
+
+  // anti-copia (respetando privacidad, solo métricas agregadas)
+  cambiosFoco    Int           @default(0)
+  eventosFoco    Json?         // [{ preguntaNumero, preguntaEnunciado, momento }]
+  cerradoPorLimiteSalidas Boolean @default(false)
+
+  checkboxesMarcados Int[]     @default([])
+  lecturaCorrecta    Boolean?
+
+  respuestas     Respuesta[]
+  resultado      Resultado?
+  certificado    Certificado?
+}
+
+model Respuesta {
+  id           String   @id @default(uuid())
+  intentoId    String
+  intento      Intento  @relation(fields: [intentoId], references: [id], onDelete: Cascade)
+  preguntaId   String
+  pregunta     Pregunta @relation(fields: [preguntaId], references: [id])
+  valorJson    Json     // guarda la respuesta según tipo (ids de opción, orden, texto, parejas)
+  esCorrecta   Boolean?
+  tiempoSegundos Int?
+  respondidaEn DateTime @default(now())
+
+  @@unique([intentoId, preguntaId])
+}
+
+model Resultado {
+  id             String   @id @default(uuid())
+  intentoId      String   @unique
+  intento        Intento  @relation(fields: [intentoId], references: [id], onDelete: Cascade)
+  aciertos       Int
+  errores        Int
+  porcentaje     Float
+  calificacion   Float
+  aprobado       Boolean
+  createdAt      DateTime @default(now())
+}
+
+model Certificado {
+  id           String   @id @default(uuid())
+  intentoId    String   @unique
+  intento      Intento  @relation(fields: [intentoId], references: [id], onDelete: Cascade)
+  folio        String   @unique
+  qrCodeUrl    String?
+  pdfUrl       String?
+  emitidoEn    DateTime @default(now())
+}
+
+// =========================
+// LOGS / AUDITORÍA
+// =========================
+
+model LogAuditoria {
+  id         String   @id @default(uuid())
+  usuarioId  String?
+  usuario    Usuario? @relation(fields: [usuarioId], references: [id])
+  accion     String
+  entidad    String?
+  entidadId  String?
+  detalle    Json?
+  ip         String?
+  createdAt  DateTime @default(now())
+}
